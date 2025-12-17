@@ -1,26 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:process_run/shell.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'dart:io' show Platform;
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:io';
 
-void main() {
-  runApp(const GitMobileApp());
-}
+void main() => runApp(const GitMobileApp());
 
 class GitMobileApp extends StatelessWidget {
   const GitMobileApp({super.key});
-
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark(useMaterial3: true).copyWith(
         textTheme: GoogleFonts.firaCodeTextTheme(ThemeData.dark().textTheme),
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.cyanAccent,
-          brightness: Brightness.dark,
-        ),
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.cyanAccent, brightness: Brightness.dark),
       ),
       home: const GitDashboard(),
     );
@@ -29,150 +23,169 @@ class GitMobileApp extends StatelessWidget {
 
 class GitDashboard extends StatefulWidget {
   const GitDashboard({super.key});
-
   @override
   State<GitDashboard> createState() => _GitDashboardState();
 }
 
 class _GitDashboardState extends State<GitDashboard> {
-  final TextEditingController _messageController = TextEditingController();
   final shell = Shell();
-  String _statusOutput = "Klik refresh untuk cek status Git.";
+  final TextEditingController _tokenController = TextEditingController();
+  final TextEditingController _repoUrlController = TextEditingController();
+  final TextEditingController _commitController = TextEditingController();
+  
+  String _output = "Terminal: Siap.";
+  String? _savedToken;
   bool _isLoading = false;
+  List<FileSystemEntity> _files = [];
 
   @override
   void initState() {
     super.initState();
-    if (!kIsWeb) {
-      checkStatus();
-    } else {
-      _statusOutput = "Mode Web Terdeteksi: Fitur Terminal dinonaktifkan. Silakan build ke APK untuk mencoba fitur Git.";
-    }
+    _loadToken();
+    _refreshFiles();
   }
 
-  Future<void> checkStatus() async {
-    if (kIsWeb) return;
+  // FITUR: Load Token
+  Future<void> _loadToken() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() => _savedToken = prefs.getString('github_token'));
+  }
 
-    setState(() => _isLoading = true);
+  Future<void> _saveToken() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('github_token', _tokenController.text);
+    setState(() => _savedToken = _tokenController.text);
+    _tokenController.clear();
+    _showSnackBar("Token tersimpan!");
+  }
+
+  // FITUR: File Explorer Sederhana
+  Future<void> _refreshFiles() async {
     try {
-      var results = await shell.run('git status -s');
+      final directory = Directory(Directory.current.path);
       setState(() {
-        _statusOutput = results.outText.isEmpty 
-            ? "✅ Status: Clean (Tidak ada perubahan)." 
-            : results.outText;
+        _files = directory.listSync().take(10).toList(); // Ambil 10 item saja
       });
     } catch (e) {
-      setState(() => _statusOutput = "❌ Error: Perintah Git gagal dijalankan.");
-    } finally {
-      setState(() => _isLoading = false);
+      print("Gagal scan folder: $e");
     }
   }
 
-  Future<void> runGitFlow() async {
-    if (kIsWeb) {
-      _showSnackBar("Gagal: Browser tidak diizinkan mengakses Terminal!");
-      return;
-    }
-
-    if (_messageController.text.trim().isEmpty) {
-      _showSnackBar("Isi pesan commit dulu!");
-      return;
-    }
-
+  // FITUR: Clone Repo
+  Future<void> _cloneRepo() async {
+    if (_savedToken == null) return _showSnackBar("Isi Token di tab Login dulu!");
     setState(() => _isLoading = true);
     try {
-      // Menjalankan urutan perintah git di sistem
-      await shell.run('git add .');
-      await shell.run('git commit -m "${_messageController.text}"');
-      await shell.run('git push origin main');
-      
-      _messageController.clear();
-      await checkStatus();
-      _showSnackBar("🚀 Berhasil push ke GitHub!");
+      String rawUrl = _repoUrlController.text.replaceFirst("https://", "");
+      String authUrl = "https://$_savedToken@$rawUrl";
+      await shell.run('git clone $authUrl');
+      setState(() => _output = "✅ Clone Berhasil!");
+      _refreshFiles();
     } catch (e) {
-      _showErrorDialog(e.toString());
+      setState(() => _output = "❌ Gagal Clone: $e");
     } finally {
       setState(() => _isLoading = false);
     }
   }
 
-  void _showSnackBar(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  // FITUR: Push
+  Future<void> _pushChanges() async {
+    if (_savedToken == null) return _showSnackBar("Login dulu!");
+    setState(() => _isLoading = true);
+    try {
+      await shell.run('git add .');
+      await shell.run('git commit -m "${_commitController.text}"');
+      await shell.run('git push origin main');
+      setState(() => _output = "🚀 Push Berhasil!");
+      _commitController.clear();
+    } catch (e) {
+      setState(() => _output = "❌ Gagal Push: $e");
+    } finally {
+      setState(() => _isLoading = false);
+    }
   }
 
-  void _showErrorDialog(String error) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text("Git Error"),
-        content: Text("Detail Error:\n$error"),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("OK"))
+  void _showSnackBar(String msg) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text("GitMobile Pro"),
+          bottom: const TabBar(
+            tabs: [Tab(icon: Icon(Icons.code), text: "Git"), Tab(icon: Icon(Icons.folder), text: "Files")],
+          ),
+        ),
+        body: TabBarView(
+          children: [
+            // TAB 1: GIT OPERATIONS
+            _buildGitTab(),
+            // TAB 2: FILE EXPLORER
+            _buildFileTab(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildGitTab() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        children: [
+          _buildTokenCard(),
+          const SizedBox(height: 15),
+          TextField(controller: _repoUrlController, decoration: const InputDecoration(labelText: "URL Repo (HTTPS)", border: OutlineInputBorder())),
+          const SizedBox(height: 8),
+          ElevatedButton.icon(onPressed: _isLoading ? null : _cloneRepo, icon: const Icon(Icons.download), label: const Text("CLONE REPOSITORY")),
+          const Divider(height: 40),
+          TextField(controller: _commitController, decoration: const InputDecoration(labelText: "Pesan Commit", border: OutlineInputBorder())),
+          const SizedBox(height: 8),
+          ElevatedButton.icon(onPressed: _isLoading ? null : _pushChanges, icon: const Icon(Icons.upload), label: const Text("COMMIT & PUSH"), style: ElevatedButton.styleFrom(backgroundColor: Colors.cyanAccent, foregroundColor: Colors.black)),
+          const SizedBox(height: 20),
+          _buildTerminalOutput(),
         ],
       ),
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text("GitMobile Dashboard"),
-        actions: [
-          IconButton(onPressed: checkStatus, icon: const Icon(Icons.refresh_rounded))
-        ],
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
+  Widget _buildFileTab() {
+    return ListView.builder(
+      itemCount: _files.length,
+      itemBuilder: (context, index) {
+        final item = _files[index];
+        return ListTile(
+          leading: Icon(item is Directory ? Icons.folder : Icons.insert_drive_file, color: Colors.cyanAccent),
+          title: Text(item.path.split('/').last),
+          subtitle: Text(item is Directory ? "Folder" : "File"),
+        );
+      },
+    );
+  }
+
+  Widget _buildTokenCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
         child: Column(
           children: [
-            Expanded(
-              child: Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.black,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.cyanAccent.withOpacity(0.3))
-                ),
-                child: SingleChildScrollView(
-                  child: Text(
-                    _statusOutput,
-                    style: const TextStyle(color: Colors.greenAccent, fontSize: 13),
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
-            TextField(
-              controller: _messageController,
-              enabled: !kIsWeb,
-              decoration: InputDecoration(
-                labelText: kIsWeb ? "Input dinonaktifkan di Web" : "Pesan Commit",
-                prefixIcon: const Icon(Icons.edit_note),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-              ),
-            ),
-            const SizedBox(height: 16),
-            SizedBox(
-              width: double.infinity,
-              height: 55,
-              child: ElevatedButton.icon(
-                onPressed: (_isLoading || kIsWeb) ? null : runGitFlow,
-                icon: _isLoading 
-                  ? const CircularProgressIndicator(strokeWidth: 2)
-                  : const Icon(Icons.cloud_upload),
-                label: Text(_isLoading ? "SABAR..." : "PUSH KE GITHUB"),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.cyanAccent,
-                  foregroundColor: Colors.black,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-              ),
-            ),
+            Text(_savedToken == null ? "🔑 Status: Belum Login" : "✅ Status: Terhubung"),
+            const SizedBox(height: 8),
+            TextField(controller: _tokenController, decoration: const InputDecoration(hintText: "Paste GitHub Token (PAT)"), obscureText: true),
+            TextButton(onPressed: _saveToken, child: const Text("Update Token")),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildTerminalOutput() {
+    return Container(
+      width: double.infinity, height: 120, padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(color: Colors.black, borderRadius: BorderRadius.circular(8)),
+      child: SingleChildScrollView(child: Text(_output, style: const TextStyle(color: Colors.greenAccent, fontSize: 12))),
     );
   }
 }
