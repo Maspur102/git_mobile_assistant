@@ -7,6 +7,7 @@ import 'package:code_text_field/code_text_field.dart';
 import 'package:highlight/languages/dart.dart';
 import 'package:flutter_highlight/themes/monokai-sublime.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:path_provider/path_provider.dart'; // Tambahan
 
 void main() => runApp(const GitMobileApp());
 
@@ -43,13 +44,24 @@ class _GitDashboardState extends State<GitDashboard> {
   bool _isLoading = false;
   List<FileSystemEntity> _files = [];
   File? _selectedFile;
+  String _currentPath = ""; // Variabel baru untuk simpan lokasi folder
 
   @override
   void initState() {
     super.initState();
-    _requestPermissions();
-    _loadToken();
+    _initApp();
     _codeController = CodeController(text: "// Pilih file", language: dart);
+  }
+
+  Future<void> _initApp() async {
+    await _loadToken();
+    await _requestPermissions();
+    // Set lokasi awal ke folder dokumen internal agar tidak kena Permission Denied
+    final directory = await getApplicationDocumentsDirectory();
+    setState(() {
+      _currentPath = directory.path;
+    });
+    _refreshFiles();
   }
 
   Future<void> _requestPermissions() async {
@@ -57,7 +69,6 @@ class _GitDashboardState extends State<GitDashboard> {
       await Permission.storage.request();
       await Permission.manageExternalStorage.request();
     }
-    _refreshFiles();
   }
 
   Future<void> _loadToken() async {
@@ -74,23 +85,29 @@ class _GitDashboardState extends State<GitDashboard> {
   }
 
   Future<void> _refreshFiles() async {
+    if (_currentPath.isEmpty) return;
     try {
-      final directory = Directory(Directory.current.path);
+      final directory = Directory(_currentPath);
       setState(() {
         _files = directory.listSync();
-        _output = "Lokasi: ${directory.path}";
+        _output = "Lokasi aktif: $_currentPath";
       });
     } catch (e) {
-      setState(() => _output = "Gagal memuat file: $e");
+      setState(() => _output = "Gagal memuat file: Akses Ditolak ke $_currentPath. Coba pindah folder.");
     }
   }
 
   void _openFile(File file) async {
-    final content = await file.readAsString();
-    setState(() {
-      _selectedFile = file;
-      _codeController?.text = content;
-    });
+    try {
+      final content = await file.readAsString();
+      setState(() {
+        _selectedFile = file;
+        _codeController?.text = content;
+      });
+      _showSnackBar("Membuka: ${file.path.split('/').last}");
+    } catch (e) {
+      _showSnackBar("Gagal membaca file!");
+    }
   }
 
   Future<void> _runGitCommand(String command) async {
@@ -100,7 +117,8 @@ class _GitDashboardState extends State<GitDashboard> {
     }
     setState(() => _isLoading = true);
     try {
-      var result = await shell.run(command);
+      // Jalankan git di dalam currentPath
+      var result = await shell.cd(_currentPath).run(command);
       setState(() => _output = result.outText.isEmpty ? "Perintah dijalankan." : result.outText);
       _refreshFiles();
     } catch (e) {
@@ -162,16 +180,33 @@ class _GitDashboardState extends State<GitDashboard> {
   }
 
   Widget _buildFileTab() {
-    return ListView.builder(
-      itemCount: _files.length,
-      itemBuilder: (context, index) {
-        final item = _files[index];
-        return ListTile(
-          leading: Icon(item is Directory ? Icons.folder : Icons.code, color: Colors.cyanAccent),
-          title: Text(item.path.split('/').last),
-          onTap: () { if (item is File) _openFile(item); },
-        );
-      },
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(8.0),
+          child: Text("Folder: $_currentPath", style: const TextStyle(fontSize: 10, color: Colors.grey)),
+        ),
+        Expanded(
+          child: ListView.builder(
+            itemCount: _files.length,
+            itemBuilder: (context, index) {
+              final item = _files[index];
+              return ListTile(
+                leading: Icon(item is Directory ? Icons.folder : Icons.code, color: Colors.cyanAccent),
+                title: Text(item.path.split('/').last),
+                onTap: () {
+                  if (item is File) {
+                    _openFile(item);
+                  } else if (item is Directory) {
+                    setState(() => _currentPath = item.path);
+                    _refreshFiles();
+                  }
+                },
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 
@@ -196,7 +231,12 @@ class _GitDashboardState extends State<GitDashboard> {
                   _showSnackBar("File Disimpan!");
                 }
               }, icon: const Icon(Icons.save), label: const Text("Simpan")),
-              IconButton(onPressed: _refreshFiles, icon: const Icon(Icons.refresh)),
+              IconButton(onPressed: () {
+                // Tombol Back folder
+                final parent = Directory(_currentPath).parent;
+                setState(() => _currentPath = parent.path);
+                _refreshFiles();
+              }, icon: const Icon(Icons.arrow_upward)),
             ],
           ),
         )
