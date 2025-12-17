@@ -38,7 +38,7 @@ class _GitDashboardState extends State<GitDashboard> {
   final TextEditingController _commitController = TextEditingController();
   CodeController? _codeController;
   
-  String _output = "Status: Menunggu Izin...";
+  String _output = "Status: Menunggu...";
   String? _savedToken;
   bool _isLoading = false;
   List<FileSystemEntity> _files = [];
@@ -47,19 +47,17 @@ class _GitDashboardState extends State<GitDashboard> {
   @override
   void initState() {
     super.initState();
-    _requestPermissions(); // Minta izin saat startup
+    _requestPermissions();
     _loadToken();
-    _codeController = CodeController(text: "// Pilih file untuk edit", language: dart);
+    _codeController = CodeController(text: "// Pilih file", language: dart);
   }
 
-  // Minta Izin Storage Android
   Future<void> _requestPermissions() async {
-    var status = await Permission.manageExternalStorage.request();
-    if (status.isGranted) {
-      _refreshFiles();
-    } else {
-      setState(() => _output = "Izin Storage Ditolak! Aplikasi tidak bisa bekerja.");
+    if (Platform.isAndroid) {
+      await Permission.storage.request();
+      await Permission.manageExternalStorage.request();
     }
+    _refreshFiles();
   }
 
   Future<void> _loadToken() async {
@@ -71,7 +69,8 @@ class _GitDashboardState extends State<GitDashboard> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('github_token', _tokenController.text);
     setState(() => _savedToken = _tokenController.text);
-    _showSnackBar("Login Berhasil!");
+    _tokenController.clear();
+    _showSnackBar("Token GitHub Tersimpan!");
   }
 
   Future<void> _refreshFiles() async {
@@ -82,7 +81,7 @@ class _GitDashboardState extends State<GitDashboard> {
         _output = "Lokasi: ${directory.path}";
       });
     } catch (e) {
-      setState(() => _output = "Gagal memuat file. Pastikan izin diberikan.");
+      setState(() => _output = "Gagal memuat file: $e");
     }
   }
 
@@ -92,23 +91,20 @@ class _GitDashboardState extends State<GitDashboard> {
       _selectedFile = file;
       _codeController?.text = content;
     });
-    _showSnackBar("Membuka: ${file.path.split('/').last}");
   }
 
   Future<void> _runGitCommand(String command) async {
     if (_savedToken == null || _savedToken!.isEmpty) {
-      _showSnackBar("Masukkan Token PAT dulu!");
+      _showSnackBar("Login (Input Token) dulu!");
       return;
     }
-    
     setState(() => _isLoading = true);
     try {
-      // Menjalankan command lewat shell
       var result = await shell.run(command);
-      setState(() => _output = result.outText.isEmpty ? "Sukses menjalankan command." : result.outText);
+      setState(() => _output = result.outText.isEmpty ? "Perintah dijalankan." : result.outText);
       _refreshFiles();
     } catch (e) {
-      setState(() => _output = "Error Git: Cek apakah Git terinstal & Token benar.");
+      setState(() => _output = "Git Error: $e");
     } finally {
       setState(() => _isLoading = false);
     }
@@ -122,7 +118,7 @@ class _GitDashboardState extends State<GitDashboard> {
       length: 3,
       child: Scaffold(
         appBar: AppBar(
-          title: const Text("GitMobile Pro v2"),
+          title: const Text("GitMobile Assistant"),
           bottom: const TabBar(tabs: [Tab(text: "Git"), Tab(text: "Files"), Tab(text: "Editor")]),
         ),
         body: TabBarView(
@@ -144,6 +140,7 @@ class _GitDashboardState extends State<GitDashboard> {
           _buildTokenCard(),
           const SizedBox(height: 10),
           TextField(controller: _repoUrlController, decoration: const InputDecoration(labelText: "URL Repo HTTPS", border: OutlineInputBorder())),
+          const SizedBox(height: 10),
           ElevatedButton(onPressed: () => _runGitCommand("git clone ${_repoUrlController.text}"), child: const Text("CLONE REPO")),
           const Divider(height: 30),
           TextField(controller: _commitController, decoration: const InputDecoration(labelText: "Pesan Commit", border: OutlineInputBorder())),
@@ -196,7 +193,7 @@ class _GitDashboardState extends State<GitDashboard> {
               ElevatedButton.icon(onPressed: () async {
                 if (_selectedFile != null) {
                   await _selectedFile!.writeAsString(_codeController!.text);
-                  _showSnackBar("Tersimpan!");
+                  _showSnackBar("File Disimpan!");
                 }
               }, icon: const Icon(Icons.save), label: const Text("Simpan")),
               IconButton(onPressed: _refreshFiles, icon: const Icon(Icons.refresh)),
@@ -209,8 +206,8 @@ class _GitDashboardState extends State<GitDashboard> {
 
   Widget _buildTokenCard() {
     return Card(child: Padding(padding: const EdgeInsets.all(8), child: Column(children: [
-      TextField(controller: _tokenController, decoration: const InputDecoration(hintText: "GitHub Token (PAT)", prefixIcon: Icon(Icons.key)), obscureText: true),
-      TextButton(onPressed: _saveToken, child: const Text("Set Login Token"))
+      TextField(controller: _tokenController, decoration: const InputDecoration(hintText: "Paste GitHub Token (PAT)", prefixIcon: Icon(Icons.key)), obscureText: true),
+      TextButton(onPressed: _saveToken, child: const Text("Set Token & Login"))
     ])));
   }
 }
